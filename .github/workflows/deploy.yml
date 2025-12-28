@@ -28,7 +28,7 @@ jobs:
       - name: Deploy to Naver Cloud
         uses: appleboy/ssh-action@v1.0.3 # master 브랜치 대신 특정 버전을 사용하는 것을 권장합니다.
         with:
-          host: ${{ secrets.SERVER_IP }}
+          host: ${{ secrets.NAVER_CLOUD_HOST }}
           username: root  # 보통 네이버 클라우드는 root
           key: ${{ secrets.NAVER_CLOUD_SSH_KEY }}
           script: |
