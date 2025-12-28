@@ -1,0 +1,46 @@
+name: NaTalk Deploy to Naver Cloud
+
+on:
+  push:
+    branches: [main] # 메인 브랜치에 푸시될 때 실행
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # 1. Docker Hub 로그인
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
+      # 2. 이미지 빌드 및 푸시
+      - name: Build and Push Docker Image
+        run: |
+          docker build -t ${{ secrets.DOCKER_HUB_USERNAME }}/vibe-talk:latest .
+          docker push ${{ secrets.DOCKER_HUB_USERNAME }}/vibe-talk:latest
+
+      # 3. 네이버 클라우드 서버에 접속해서 배포 (SSH)
+      - name: Deploy to Naver Cloud
+        uses: appleboy/ssh-action@v1.0.3 # master 브랜치 대신 특정 버전을 사용하는 것을 권장합니다.
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: root  # 보통 네이버 클라우드는 root
+          key: ${{ secrets.NAVER_CLOUD_SSH_KEY }}
+          script: |
+            # 배포 스크립트
+            docker pull ${{ secrets.DOCKER_HUB_USERNAME }}/vibe-talk:latest
+            docker stop vibe-talk || true
+            docker rm vibe-talk || true
+            # rooms.json 파일이 없을 경우를 대비해 미리 생성합니다.
+            touch /root/data/talk/rooms.json
+            docker run -d --name vibe-talk \
+              --restart always \
+              -p 3002:3002 \
+              -v /root/data/talk:/app/server/data \
+              -v /root/data/talk/rooms.json:/app/server/rooms.json \
+              ${{ secrets.DOCKER_HUB_USERNAME }}/vibe-talk:latest
