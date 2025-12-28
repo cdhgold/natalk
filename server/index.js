@@ -43,6 +43,10 @@ const saveRooms = async () => {
     for (const roomId in rooms) {
       // users Map은 저장하지 않음 (휘발성 데이터)
       const { users, ...roomData } = rooms[roomId];
+      // userProfiles는 영구 저장 데이터이므로 포함
+      if (!roomData.userProfiles) {
+        roomData.userProfiles = {};
+      }
       roomsToSave[roomId] = roomData;
     }
     await fs.writeFile(roomsFilePath, JSON.stringify(roomsToSave, null, 2));
@@ -58,7 +62,11 @@ const loadRooms = async () => {
     // 불러온 방 정보에 실시간 데이터(users)를 위한 Map을 다시 추가
     for (const roomId in loadedRooms) {
       const roomData = loadedRooms[roomId];
-      rooms[roomId] = { ...roomData, users: new Map() };
+      rooms[roomId] = {
+        ...roomData,
+        users: new Map(),
+        userProfiles: roomData.userProfiles || {}, // 이전 데이터 호환성을 위해 초기화
+      };
 
       // 데이터 무결성 검사: 방 메타데이터는 있는데 채팅 로그 파일이 없는 경우, 파일을 새로 생성해줍니다.
       const sanitizedRoomName = sanitizeFilename(roomData.name);
@@ -131,6 +139,7 @@ app.post('/create-room', async (req, res) => {
     adminToken,
     inviteCode, // 생성된 초대 코드를 방 정보에 추가
     users: new Map(),
+    userProfiles: {}, // 사용자 프로필을 저장할 객체
     createdAt: new Date(),
   };
 
@@ -265,26 +274,48 @@ io.on('connection', (socket) => {
   const { roomId, userId } = socket;
   console.log(`[User Connected] User ${userId.substring(0, 5)} connected to room ${roomId.substring(0, 5)}`);
 
+  // 사용자 프로필 정보 조회 및 설정
+  const userProfile = rooms[roomId]?.userProfiles?.[userId] || {};
+
   // 사용자 정보를 Map에 저장 (기본값 설정)
   rooms[roomId].users.set(userId, {
     id: userId,
-    nickname: `익명-${userId.substring(0, 5)}`,
-    profileImage: null,
+    nickname: userProfile.nickname || `익명-${userId.substring(0, 5)}`,
+    profileImage: userProfile.profileImage || null,
   });
   socket.join(roomId);
 
   // 1. 새로운 사용자가 접속했으므로, 사용자 목록을 모두에게 브로드캐스트
   broadcastUserList(roomId);
 
-  // 클라이언트로부터 프로필 정보를 받아 업데이트
-  socket.on('set_profile', ({ nickname, profileImage }) => {
+  // 클라이언트로부터 프로필 정보를 받아 업데이트하고 영구 저장
+  socket.on('set_profile', async ({ nickname, profileImage, skipFuture }) => {
     const room = rooms[roomId];
     if (room && room.users.has(userId)) {
-        const userData = room.users.get(userId);
-        userData.nickname = nickname;
-        userData.profileImage = profileImage;
-        broadcastUserList(roomId); // 프로필이 변경되었으므로 사용자 목록 다시 전송
-        io.to(roomId).emit('system_message', `'${userData.nickname}'님이 프로필을 업데이트했습니다.`);
+      const userData = room.users.get(userId);
+      userData.nickname = nickname;
+      userData.profileImage = profileImage;
+
+      // 영구 저장소에도 업데이트
+      if (!room.userProfiles[userId]) room.userProfiles[userId] = {};
+      room.userProfiles[userId].nickname = nickname;
+      room.userProfiles[userId].profileImage = profileImage;
+      if (typeof skipFuture !== 'undefined') {
+        room.userProfiles[userId].skipSetup = skipFuture;
+      }
+
+      await saveRooms(); // 변경사항 파일에 즉시 저장
+      broadcastUserList(roomId); // 프로필이 변경되었으므로 사용자 목록 다시 전송
+    }
+  });
+
+  // '다시 보지 않기' 설정만 별도로 저장
+  socket.on('set_profile_skip', async ({ skipFuture }) => {
+    const room = rooms[roomId];
+    if (room && room.users.has(userId)) {
+      if (!room.userProfiles[userId]) room.userProfiles[userId] = {};
+      room.userProfiles[userId].skipSetup = skipFuture;
+      await saveRooms();
     }
   });
 
@@ -310,13 +341,14 @@ io.on('connection', (socket) => {
 
   // 클라이언트의 자동 로그인을 위해 세션 토큰 발급
   const sessionToken = `${userId}:${roomId}`;
-  const roomName = rooms[roomId]?.name;
-  const inviteCode = rooms[roomId]?.inviteCode;
-  socket.emit('session', { userId, sessionToken, roomName, inviteCode });
+  const currentRoom = rooms[roomId];
+  const currentUserData = currentRoom.users.get(userId);
+  const currentUserProfile = currentRoom.userProfiles?.[userId] || {};
 
-  const currentUserData = rooms[roomId].users.get(userId);
+  socket.emit('session', { userId, sessionToken, roomName: currentRoom?.name, inviteCode: currentRoom?.inviteCode, nickname: currentUserData.nickname, profileImage: currentUserData.profileImage, skipProfileSetup: currentUserProfile.skipSetup || false });
+
   // 다른 사용자에게 입장 알림
-  socket.to(roomId).emit('user_joined', { userId, message: `${currentUserData.nickname}님이 입장했습니다.` });
+  // socket.to(roomId).emit('user_joined', { userId, message: `${currentUserData.nickname}님이 입장했습니다.` });
 
   socket.on('send_message', async (data) => {
     const senderData = rooms[roomId]?.users.get(userId);
@@ -389,7 +421,7 @@ io.on('connection', (socket) => {
       rooms[roomId].users.delete(userId);
       console.log(`[User Disconnected] User ${userId.substring(0, 5)} (${nickname}) disconnected from room ${roomId.substring(0, 5)}`);
       // 다른 사용자에게 퇴장 알림
-      io.to(roomId).emit('user_left', { userId, message: `${nickname}님이 퇴장했습니다.` });
+      // io.to(roomId).emit('user_left', { userId, message: `${nickname}님이 퇴장했습니다.` });
       // 사용자가 나갔으므로, 사용자 목록을 모두에게 브로드캐스트
       broadcastUserList(roomId);
     }

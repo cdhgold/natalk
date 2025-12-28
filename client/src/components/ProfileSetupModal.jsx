@@ -1,10 +1,11 @@
 import React, { useState, useRef } from 'react';
 
-export function ProfileSetupModal({ onProfileSet }) {
+export function ProfileSetupModal({ onProfileSet, onSkip }) {
   const [nickname, setNickname] = useState('');
   const [profileImage, setProfileImage] = useState(null);
   const [error, setError] = useState('');
   const fileInputRef = useRef(null);
+  const [skipFuture, setSkipFuture] = useState(false);
 
   const handleImageChange = (e) => {
     const file = e.target.files[0];
@@ -41,14 +42,19 @@ export function ProfileSetupModal({ onProfileSet }) {
       setError('닉네임을 입력해주세요.');
       return;
     }
-    onProfileSet({ nickname, profileImage });
+    onProfileSet({ nickname, profileImage, skipFuture });
+  };
+
+  const handleSkip = () => {
+    // '나중에 하기'는 체크박스 상태와 관계없이 동작하도록 onSkip만 호출합니다.
+    onSkip();
   };
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50">
       <div className="bg-white p-8 rounded-lg shadow-xl w-full max-w-sm mx-4">
         <h2 className="text-2xl font-bold mb-6 text-center">프로필 설정</h2>
-        <form onSubmit={handleSubmit} className="space-y-6">
+        <form onSubmit={handleSubmit} className="space-y-4">
           <div className="flex flex-col items-center">
             <label htmlFor="profile-image-upload" className="cursor-pointer">
               <img
@@ -72,7 +78,22 @@ export function ProfileSetupModal({ onProfileSet }) {
             />
           </div>
           {error && <p className="text-sm text-center text-red-500">{error}</p>}
-          <button type="submit" className="w-full py-2 text-white bg-blue-600 rounded-md hover:bg-blue-700">채팅 시작하기</button>
+          <div className="flex items-center pt-2">
+            <input
+              id="skip-profile-setup"
+              type="checkbox"
+              checked={skipFuture}
+              onChange={(e) => setSkipFuture(e.target.checked)}
+              className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+            />
+            <label htmlFor="skip-profile-setup" className="ml-2 block text-sm text-gray-900">
+              다시 보지 않기
+            </label>
+          </div>
+          <button type="submit" className="w-full py-2 text-white bg-blue-600 rounded-md hover:bg-blue-700">프로필 설정</button>
+          <button type="button" onClick={handleSkip} className="w-full py-1 text-sm text-gray-600 hover:underline">
+            나중에 하기
+          </button>
         </form>
       </div>
     </div>

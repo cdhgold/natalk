@@ -26,11 +26,16 @@ export const useAuth = () => {
       // 토큰 인증 실패 시 로컬 스토리지 정리
       localStorage.removeItem('natalk-session');
     });
-    newSocket.on('session', ({ userId, sessionToken, roomName, inviteCode }) => {
+    newSocket.on('session', (sessionData) => {
+      const { userId, sessionToken, ...rest } = sessionData;
       localStorage.setItem('natalk-session', sessionToken);
       const [, roomId] = sessionToken.split(':');
-      setUser({ id: userId, roomId: roomId, roomName: roomName, inviteCode: inviteCode });
+      setUser({ id: userId, roomId: roomId, ...rest });
       setSocket(newSocket);
+
+      // 방 입장 효과음 재생 (natalk.md 요청사항)
+      const audio = new Audio('/sounds/natalk.mp3'); // public/sounds/natalk.mp3 에 파일이 있어야 합니다.
+      audio.play().catch(e => console.warn("입장 사운드를 재생할 수 없습니다. 사용자의 상호작용이 필요합니다.", e));
     });
     // '강퇴' 기능을 위한 이벤트 리스너
     newSocket.on('force_disconnect', () => {

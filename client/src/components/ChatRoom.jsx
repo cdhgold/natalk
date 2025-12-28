@@ -161,14 +161,13 @@ export function ChatRoom({ socket, user, onLogout }) {
       setIsAdmin(true);
     }
 
-    // 로컬 스토리지에 프로필이 없으면 설정 모달을 띄움
-    const savedProfile = localStorage.getItem('natalk-profile');
-    if (!savedProfile) {
+    // 서버에서 받은 user 정보 기반으로 프로필 설정 모달 표시 여부 결정
+    // user.skipProfileSetup: '다시 보지 않기' 설정 값
+    // user.nickname.startsWith('익명-'): 프로필이 설정되지 않은 기본 상태인지 확인
+    if (user && !user.skipProfileSetup && user.nickname?.startsWith('익명-')) {
       setShowProfileSetup(true);
-    } else {
-      socket.emit('set_profile', JSON.parse(savedProfile));
     }
-  }, [user.roomId, socket]);
+  }, [user]);
 
   useEffect(() => {
     if (!socket) return;
@@ -252,12 +251,15 @@ export function ChatRoom({ socket, user, onLogout }) {
     }
   };
 
-  const handleProfileSet = ({ nickname, profileImage }) => {
-    // 1. 서버에 프로필 정보 전송
-    socket.emit('set_profile', { nickname, profileImage });
-    // 2. 로컬 스토리지에 저장하여 다음 접속 시 모달이 뜨지 않도록 함
-    localStorage.setItem('natalk-profile', JSON.stringify({ nickname, profileImage }));
-    // 3. 모달 닫기
+  const handleProfileSet = ({ nickname, profileImage, skipFuture }) => {
+    // 서버에 프로필 정보와 '다시 보지 않기' 설정을 한번에 전송
+    socket.emit('set_profile', { nickname, profileImage, skipFuture });
+    setShowProfileSetup(false);
+  };
+
+  const handleProfileSkip = () => {
+    // '나중에 하기'를 누르면, 다시 묻지 않도록 서버에 설정을 영구 저장합니다.
+    socket.emit('set_profile_skip', { skipFuture: true });
     setShowProfileSetup(false);
   };
 
@@ -270,7 +272,7 @@ export function ChatRoom({ socket, user, onLogout }) {
           onClose={() => setShowInviteModal(false)}
         />
       )}
-      {showProfileSetup && <ProfileSetupModal onProfileSet={handleProfileSet} />}
+      {showProfileSetup && <ProfileSetupModal onProfileSet={handleProfileSet} onSkip={handleProfileSkip} />}
       {showParticipants && (
         <ParticipantsSidebar
           participants={participants}
