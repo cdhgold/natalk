@@ -31,6 +31,8 @@ function PaymentModal({ onConfirm, onCancel }) {
   );
 }
 
+const API_URL = import.meta.env.PROD ? 'http://211.188.63.148:3002' : 'http://localhost:3002';
+
 export function CreateRoomForm({ onRoomCreated, onSwitchToLogin }) {
   const [paymentApproved, setPaymentApproved] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
@@ -51,7 +53,7 @@ export function CreateRoomForm({ onRoomCreated, onSwitchToLogin }) {
     setIsLoading(true);
 
     try {
-      const response = await fetch('http://localhost:3002/create-room', {
+      const response = await fetch(`${API_URL}/create-room`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ roomName, password }),

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { io } from 'socket.io-client';
 
-const SERVER_URL = 'http://localhost:3002';
+const SERVER_URL = import.meta.env.PROD ? 'http://211.188.63.148:3002' : 'http://localhost:3002';
 
 /**
  * @description NaTalk 인증 및 소켓 연결을 관리하는 React Custom Hook
