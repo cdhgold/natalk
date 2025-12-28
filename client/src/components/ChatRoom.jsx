@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef, Fragment } from 'react';
 import { ProfileSetupModal } from './ProfileSetupModal';
 
+const API_URL = import.meta.env.PROD ? 'http://211.188.63.148:3002' : 'http://localhost:3002';
+
 // 말풍선 컴포넌트
 function MessageBubble({ message, isOwn }) {
   const formatTime = (timestamp) => {
@@ -220,7 +222,7 @@ export function ChatRoom({ socket, user, onLogout }) {
     }
 
     try {
-      const response = await fetch(`http://localhost:3002/room/${user.roomId}`, {
+      const response = await fetch(`${API_URL}/room/${user.roomId}`, {
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
