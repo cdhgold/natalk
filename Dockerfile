@@ -19,7 +19,7 @@ RUN cd server && npm install --production
 
 # 빌드된 클라이언트 파일과 서버 소스코드 복사
 COPY --from=client-builder /app/client/dist ./client/dist
-COPY client/public ./client/public
+COPY --from=client-builder /app/client/public ./client/public
 COPY server/ ./server/
 
 ENV PORT=3002
