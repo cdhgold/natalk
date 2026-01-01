@@ -3,12 +3,6 @@ import { io } from 'socket.io-client';
 
 const SERVER_URL = import.meta.env.PROD ? 'http://211.188.63.148:3002' : 'http://localhost:3002';
 
-/**
- * @description NaTalk 인증 및 소켓 연결을 관리하는 React Custom Hook
- * 1. localStorage에 저장된 세션 토큰으로 자동 로그인 시도
- * 2. 로그인/로그아웃 기능 제공
- * 3. 소켓 연결 상태 및 오류 관리
- */
 export const useAuth = () => {
   const [socket, setSocket] = useState(null);
   const [user, setUser] = useState(null);
@@ -18,41 +12,37 @@ export const useAuth = () => {
   const setupSocketListeners = useCallback((newSocket) => {
     newSocket.on('connect', () => {
       setIsConnected(true);
-      setError(null); // 연결 성공 시 에러 초기화
+      setError(null);
     });
     newSocket.on('disconnect', () => setIsConnected(false));
     newSocket.on('connect_error', (err) => {
       setError(err.message);
-      // 토큰 인증 실패 시 로컬 스토리지 정리
-      localStorage.removeItem('natalk-session');
+      // Do not remove session on temporary connection errors
     });
     newSocket.on('session', (sessionData) => {
-      const { userId, sessionToken, ...rest } = sessionData;
+      const { userId, sessionToken, isAdmin, ...rest } = sessionData;
       localStorage.setItem('natalk-session', sessionToken);
       const [, roomId] = sessionToken.split(':');
-      setUser({ id: userId, roomId: roomId, ...rest });
+      // Update user state with isAdmin status from server
+      setUser({ id: userId, roomId: roomId, isAdmin, ...rest });
       setSocket(newSocket);
-
-      // 방 입장 효과음 재생 (natalk.md 요청사항)
-      const audio = new Audio('/sounds/natalk.mp3'); // public/sounds/natalk.mp3 에 파일이 있어야 합니다.
-      audio.play().catch(e => console.warn("입장 사운드를 재생할 수 없습니다. 사용자의 상호작용이 필요합니다.", e));
     });
-    // '강퇴' 기능을 위한 이벤트 리스너
-    newSocket.on('force_disconnect', () => {
+    newSocket.on('force_disconnect', (message) => {
       newSocket.disconnect();
       localStorage.removeItem('natalk-session');
       setSocket(null);
       setUser(null);
-      setError("방에서 강퇴당했습니다.");
+      setError(message || "You have been disconnected from the room.");
     });
   }, []);
 
   const connectWithToken = useCallback((sessionToken) => {
-    const newSocket = io(SERVER_URL, { auth: { sessionToken } });
+    // Reconnecting no longer requires sending an admin token.
+    const auth = { sessionToken };
+    const newSocket = io(SERVER_URL, { auth });
     setupSocketListeners(newSocket);
   }, [setupSocketListeners]);
 
-  // 앱 로드 시 자동 로그인 처리
   useEffect(() => {
     const sessionToken = localStorage.getItem('natalk-session');
     if (sessionToken) {
@@ -61,11 +51,16 @@ export const useAuth = () => {
     return () => {
       if (socket) socket.disconnect();
     };
-  }, [connectWithToken]); // 의존성 배열 수정
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const login = useCallback((roomIdentifier, password) => {
+  const login = useCallback((roomIdentifier, credentials) => {
     if (socket) socket.disconnect();
-    const newSocket = io(SERVER_URL, { auth: { roomId: roomIdentifier, password } });
+    
+    // The credentials object will contain either { password: '...' } or { email: '...' }
+    const auth = { roomIdentifier, ...credentials };
+    
+    const newSocket = io(SERVER_URL, { auth });
     setupSocketListeners(newSocket);
   }, [socket, setupSocketListeners]);
 
@@ -75,6 +70,12 @@ export const useAuth = () => {
     setUser(null);
     setIsConnected(false);
     localStorage.removeItem('natalk-session');
+    // Also clear any legacy admin tokens if they exist
+    Object.keys(localStorage).forEach(key => {
+      if (key.startsWith('natalk-admin-')) {
+        localStorage.removeItem(key);
+      }
+    });
   }, [socket]);
 
   return { user, socket, isConnected, error, login, logout };

@@ -12,38 +12,39 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const server = http.createServer(app); 
+const server = http.createServer(app);
 const PORT = process.env.PORT || 3002;
 const dataDir = path.join(__dirname, 'data');
 const roomsFilePath = path.join(__dirname, 'rooms.json');
-// 서버 시작 시 data 디렉토리 생성
 fs.mkdir(dataDir, { recursive: true }).catch(console.error);
 
-// 프로덕션 환경에서 빌드된 클라이언트 파일을 제공합니다.
 const clientBuildPath = path.join(__dirname, '..', 'client', 'dist');
 app.use(express.static(clientBuildPath));
 
+// client/public 폴더의 정적 파일(프로필 이미지 등)을 제공하기 위해 추가합니다.
+// 이렇게 하면 /default-avatar.png 같은 경로로 클라이언트에서 이미지를 요청할 수 있습니다.
+const clientPublicPath = path.join(__dirname, '..', 'client', 'public');
+app.use(express.static(clientPublicPath));
+
 function sanitizeFilename(name) {
-  // 파일명으로 사용할 수 없는 문자를 밑줄(_)로 대체
   return name.replace(/[\\/:\*\?"<>\|]/g, '_');
 }
 
 const generateInviteCode = () => {
-  // 간단한 8자리 영문/숫자 코드를 생성합니다.
   return crypto.randomBytes(4).toString('hex').toUpperCase();
 };
 
-// 기획서의 '휘발성 메시지'를 고려하여 DB 대신 인메모리 객체로 방 정보를 관리합니다.
-// 서버 재시작 시 모든 데이터는 초기화됩니다.
 let rooms = {};
+// 현재 접속 중인 방장 목록을 관리하는 휘발성 데이터
+// { roomId -> hostUserId }
+const activeAdmins = new Map();
 
 const saveRooms = async () => {
   try {
     const roomsToSave = {};
     for (const roomId in rooms) {
-      // users Map은 저장하지 않음 (휘발성 데이터)
+      // users 맵과 같은 휘발성 데이터는 제외하고 저장
       const { users, ...roomData } = rooms[roomId];
-      // userProfiles는 영구 저장 데이터이므로 포함
       if (!roomData.userProfiles) {
         roomData.userProfiles = {};
       }
@@ -59,16 +60,15 @@ const loadRooms = async () => {
   try {
     const data = await fs.readFile(roomsFilePath, 'utf-8');
     const loadedRooms = JSON.parse(data);
-    // 불러온 방 정보에 실시간 데이터(users)를 위한 Map을 다시 추가
     for (const roomId in loadedRooms) {
       const roomData = loadedRooms[roomId];
       rooms[roomId] = {
         ...roomData,
-        users: new Map(),
-        userProfiles: roomData.userProfiles || {}, // 이전 데이터 호환성을 위해 초기화
+        // 서버 시작 시 모든 방의 접속자 목록은 비어있음
+        users: new Map(), 
+        userProfiles: roomData.userProfiles || {},
       };
-
-      // 데이터 무결성 검사: 방 메타데이터는 있는데 채팅 로그 파일이 없는 경우, 파일을 새로 생성해줍니다.
+      // 방 채팅 로그 파일 확인 및 생성
       const sanitizedRoomName = sanitizeFilename(roomData.name);
       const filePath = path.join(dataDir, `${sanitizedRoomName}.json`);
       try {
@@ -83,8 +83,7 @@ const loadRooms = async () => {
     console.log(`[State] Successfully loaded ${Object.keys(rooms).length} rooms from rooms.json`);
   } catch (error) {
     if (error.code === 'ENOENT') {
-      console.log('[State] rooms.json 파일을 찾을 수 없어 새로 생성합니다.');
-      // 파일이 없으면 빈 객체로 새 파일을 생성합니다.
+      console.log('[State] rooms.json not found, creating a new one.');
       await fs.writeFile(roomsFilePath, '{}', 'utf-8');
     } else {
       console.error('[State Error] Failed to load rooms state:', error);
@@ -92,69 +91,57 @@ const loadRooms = async () => {
   }
 };
 
-/**
- * @description 방장이 새로운 방을 생성하는 엔드포인트
- * @body { password: "방 비밀번호" }
- * @returns { roomId: "생성된 고유 방 ID" }
- */
 app.post('/create-room', async (req, res) => {
-  const { password, roomName } = req.body;
-  if (!password || !roomName) {
-    return res.status(400).json({ message: '방 이름과 비밀번호를 모두 입력해주세요.' });
+  const { password, roomName, email } = req.body; // 'email' 추가
+  if (!password || !roomName || !email) { // 'email' 필드 검증
+    return res.status(400).json({ message: 'Room name, password, and email are required.' });
   }
 
-  // 1. 중복된 방 이름(파일 이름)이 있는지 확인하여 데이터 덮어쓰기 방지
   const sanitizedRoomName = sanitizeFilename(roomName);
   const filePath = path.join(dataDir, `${sanitizedRoomName}.json`);
 
   try {
     await fs.access(filePath);
-    // 파일이 존재하면, 에러 응답
-    return res.status(409).json({ message: '이미 존재하는 방 이름입니다. 다른 이름을 사용해주세요.' });
+    return res.status(409).json({ message: 'Room name already exists. Please use a different name.' });
   } catch (error) {
-    // 파일이 존재하지 않을 때(ENOENT)가 정상적인 경우임. 그 외 에러는 서버 에러로 처리.
     if (error.code !== 'ENOENT') {
       console.error('Error checking file existence:', error);
-      return res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+      return res.status(500).json({ message: 'A server error occurred.' });
     }
   }
 
   const roomId = uuidv4();
-  const adminToken = crypto.randomBytes(16).toString('hex');
   
   let inviteCode;
   let isCodeUnique = false;
-  // 생성된 초대 코드가 중복되지 않는지 확인
   while (!isCodeUnique) {
     inviteCode = generateInviteCode();
     const codeInUse = Object.values(rooms).some(r => r.inviteCode === inviteCode);
-    if (!codeInUse) {
-      isCodeUnique = true;
-    }
+    if (!codeInUse) isCodeUnique = true;
   }
 
   rooms[roomId] = {
     name: roomName,
     password,
-    adminToken,
-    inviteCode, // 생성된 초대 코드를 방 정보에 추가
+    ownerEmail: email, // 방장 이메일 저장
+    inviteCode,
+    hostId: null, // hostId는 이제 사용되지 않거나 다른 용도로 사용될 수 있음
     users: new Map(),
-    userProfiles: {}, // 사용자 프로필을 저장할 객체
+    userProfiles: {},
     createdAt: new Date(),
   };
 
   try {
-    // 2. 방 생성 시, 빈 배열을 가진 JSON 파일을 즉시 생성
     await fs.writeFile(filePath, '[]', 'utf-8');
-    // 방 상태를 파일에 저장
     await saveRooms();
     console.log(`[File Created] For room: ${roomName}, Path: ${filePath}`);
-    console.log(`[Room Created] Name: ${roomName}, ID: ${roomId}`);
-    res.status(201).json({ roomId, adminToken, inviteCode });
+    console.log(`[Room Created] Name: ${roomName}, ID: ${roomId}, Owner Email: ${email}`);
+    // creationToken은 더 이상 반환하지 않음
+    res.status(201).json({ roomId, inviteCode });
   } catch (error) {
     console.error('Failed to create chat file:', error);
-    delete rooms[roomId]; // 파일 생성 실패 시, 메모리에 만든 방 정보도 삭제
-    res.status(500).json({ message: '채팅 로그 파일을 생성하는 데 실패했습니다.' });
+    delete rooms[roomId];
+    res.status(500).json({ message: 'Failed to create chat log file.' });
   }
 });
 
@@ -165,193 +152,208 @@ const broadcastUserList = (roomId) => {
   }
 };
 
-// 방 폭파 (관리자 전용)
 app.delete('/room/:roomId', async (req, res) => {
+  // 방 삭제 로직은 이제 소켓 이벤트(방장만 가능)로 처리하는 것이 더 안전함
+  // HTTP DELETE는 더 이상 사용하지 않거나, 매우 강력한 인증(예: JWT) 필요
+  // 여기서는 기능을 유지하되, 콘솔에 경고를 출력
+  console.warn(`[Security] HTTP DELETE /room/${req.params.roomId} is deprecated. Use socket event 'destroy_room'.`);
   const { roomId } = req.params;
-  const { adminToken } = req.body;
-
-  const room = rooms[roomId];
-
-  if (!room) {
-    return res.status(404).json({ message: '존재하지 않는 방입니다.' });
-  }
-
-  if (room.adminToken !== adminToken) {
-    return res.status(403).json({ message: '방을 삭제할 권한이 없습니다.' });
-  }
-
-  try {
-    // 1. 해당 방의 모든 유저에게 방이 폭파되었음을 알리고 연결을 끊음
-    io.to(roomId).emit('system_message', '방장에 의해 방이 삭제되었습니다. 3초 후 연결이 종료됩니다.');
-    io.to(roomId).disconnectSockets(true);
-
-    // 2. 채팅 로그 파일 삭제
-    const sanitizedRoomName = sanitizeFilename(room.name);
-    const filePath = path.join(dataDir, `${sanitizedRoomName}.json`);
-    await fs.unlink(filePath);
-
-    // 3. 메모리에서 방 정보 삭제
-    delete rooms[roomId];
-    // 변경된 방 상태를 파일에 저장
-    await saveRooms();
-
-    console.log(`[Room Destroyed] ID: ${roomId}, Name: ${room.name}`);
-    res.status(200).json({ message: '방이 성공적으로 삭제되었습니다.' });
-  } catch (error) {
-    console.error(`[Error Destroying Room] ID: ${roomId}`, error);
-    res.status(500).json({ message: '방을 삭제하는 중 오류가 발생했습니다.' });
-  }
+  // adminToken 대신 hostId를 확인해야 하나, HTTP 요청에서는 사용자 식별이 어려움.
+  // 따라서 이 엔드포인트는 사실상 사용 불가 상태가 되어야 함.
+  // 기능적으로 남겨두지만, 실제 운영에서는 제거하거나 재설계 필요.
+  res.status(403).json({ message: 'This endpoint is deprecated for security reasons.'});
 });
 
-// API 라우트 외의 모든 GET 요청을 React 앱으로 전달하여 클라이언트 사이드 라우팅을 지원합니다.
+// 방 목록 및 현재 활성화 상태(접속자 수)를 반환하는 API 엔드포인트
+app.get('/api/rooms-status', (req, res) => {
+  const roomStatuses = Object.entries(rooms).map(([roomId, room]) => ({
+    // 민감한 정보(password, ownerEmail 등)는 제외하고 필요한 정보만 반환합니다.
+    roomId,
+    name: room.name,
+    userCount: room.users.size,
+    isActive: room.users.size > 0,
+  }));
+  res.status(200).json(roomStatuses);
+});
+
+
 app.get('*', (req, res) => {
   res.sendFile(path.join(clientBuildPath, 'index.html'));
 });
 
 const io = new Server(server, {
-  cors: {
-    origin: '*', // 실제 프로덕션에서는 클라이언트 주소로 제한하세요.
-    methods: ['GET', 'POST'],
-  },
+  cors: { origin: '*', methods: ['GET', 'POST'] },
 });
 
-/**
- * @description Socket.io 보안 미들웨어 (가장 중요)
- * 1. 초대 코드(roomId)와 비밀번호 검증
- * 2. 10명 인원 제한 로직
- * 3. 자동 로그인을 위한 세션 토큰 검증
- */
 io.use((socket, next) => {
-  const { roomId: roomIdentifier, password, sessionToken } = socket.handshake.auth;
+  const { roomIdentifier, password, email, sessionToken } = socket.handshake.auth;
+  socket.isAdmin = false;
 
-  // 1. 세션 토큰으로 재접속하는 경우
+  // 세션 토큰이 있으면, 재접속으로 간주하고 우선 처리
   if (sessionToken) {
     const [userId, tokenRoomId] = sessionToken.split(':');
-    if (rooms[tokenRoomId]) {
+    const room = rooms[tokenRoomId];
+    // 서버 재시작 등으로 room.userProfiles가 없을 수 있으므로 안전하게 체크
+    if (room && room.userProfiles && room.userProfiles[userId]) {
+      console.log(`[Session] Reconnecting user ${userId.substring(0,5)} to room ${tokenRoomId.substring(0,5)}`);
       socket.roomId = tokenRoomId;
       socket.userId = userId;
+      // 재접속 시 방장 여부 다시 확인
+      if (room.hostId === userId) {
+        // 방장이 재접속하는 경우, activeAdmins에 다시 등록
+        if (activeAdmins.has(tokenRoomId) && activeAdmins.get(tokenRoomId) !== userId) {
+          console.log(`[Host Reconnect Denied] Host already active for room ${tokenRoomId.substring(0,5)}`);
+          return next(new Error('The room owner is already logged in from another device.'));
+        }
+        socket.isAdmin = true;
+        activeAdmins.set(tokenRoomId, userId);
+      }
       return next();
     }
-    return next(new Error('Invalid session token.'));
   }
 
-  // 2. 새로운 비밀번호로 접속하는 경우
   let room;
   let actualRoomId = null;
 
-  // 클라이언트가 보낸 식별자(roomIdentifier)가 UUID일 수도, 방 이름일 수도 있음.
-  // 먼저 UUID(방의 실제 ID)인지 확인
   if (rooms[roomIdentifier]) {
     actualRoomId = roomIdentifier;
     room = rooms[actualRoomId];
   } else {
-    // ID가 아니라면, 방 이름 또는 초대 코드로 검색
     actualRoomId = Object.keys(rooms).find(id => rooms[id].name === roomIdentifier || rooms[id].inviteCode === roomIdentifier);
-    if (actualRoomId) {
-      room = rooms[actualRoomId];
+    if (actualRoomId) room = rooms[actualRoomId];
+  }
+  
+  if (!room) return next(new Error('The room does not exist.'));
+  if (room.users.size >= 10) return next(new Error('The room is full (max 10 people).'));
+
+  socket.roomId = actualRoomId;
+
+  // 방장 로그인 시도
+  if (email) {
+    if (room.ownerEmail === email) {
+      // 이미 다른 기기에서 방장이 접속해 있는지 확인
+      if (activeAdmins.has(actualRoomId)) {
+        console.log(`[Host Login Denied] Host already active for room ${actualRoomId.substring(0,5)}`);
+        return next(new Error('The room owner is already logged in from another device.'));
+      }
+
+      // 방장은 이메일 기반의 영구 ID를 사용. 이를 통해 프로필 정보를 유지.
+      const adminPersistentId = crypto.createHash('sha256').update(email).digest('hex');
+      socket.userId = adminPersistentId;
+
+      // 이메일이 일치하면 방장으로 인정
+      socket.isAdmin = true;
+      room.hostId = socket.userId; // 현재 접속의 userId를 방장으로 설정
+      activeAdmins.set(actualRoomId, socket.userId); // 현재 접속중인 방장으로 등록
+      saveRooms(); // 방장 ID 변경사항 저장
+      console.log(`[Host Login] User ${socket.userId.substring(0,5)} logged in as host for room ${actualRoomId.substring(0,5)}`);
+      return next();
+    } else {
+      return next(new Error('Incorrect email for room owner.'));
     }
   }
 
-  if (!room) {
-    return next(new Error('존재하지 않는 방입니다.'));
-  }
-
-  if (room.password !== password) {
-    return next(new Error('비밀번호가 일치하지 않습니다.'));
-  }
-
-  if (room.users.size >= 10) {
-    return next(new Error('방이 가득 찼습니다 (최대 10명).'));
-  }
-
-  // 인증 성공 시, 소켓 객체에 필요한 정보 저장
-  socket.roomId = actualRoomId; // 실제 방의 UUID를 저장
-  socket.userId = uuidv4(); // 사용자에게 고유 ID 부여
+  // 게스트 로그인 시도
+  // 게스트는 세션 토큰이 없는 한, 매번 새로운 임시 ID를 발급받음.
+  socket.userId = uuidv4();
+  if (room.password !== password) return next(new Error('Incorrect password.'));
+  
   next();
 });
 
 io.on('connection', (socket) => {
-  const { roomId, userId } = socket;
-  console.log(`[User Connected] User ${userId.substring(0, 5)} connected to room ${roomId.substring(0, 5)}`);
+  const { roomId, userId, isAdmin } = socket;
+  const room = rooms[roomId];
 
-  // 사용자 프로필 정보 조회 및 설정
-  const userProfile = rooms[roomId]?.userProfiles?.[userId] || {};
+  if (!room) {
+    console.error(`[Connection Error] Room ${roomId} not found for user ${userId}`);
+    return socket.disconnect();
+  }
+  
+  console.log(`[User Connected] User ${userId.substring(0, 5)} to room ${roomId.substring(0, 5)}. Host: ${isAdmin}`);
 
-  // 사용자 정보를 Map에 저장 (기본값 설정)
-  rooms[roomId].users.set(userId, {
+  let userProfile = room.userProfiles?.[userId];
+
+  // If user has no profile or no nickname, set up a new one with a random avatar.
+  if (!userProfile || !userProfile.nickname) {
+    const randomImageIndex = Math.floor(Math.random() * 11) + 1;
+    const randomProfileImage = `/profile${randomImageIndex}.png`;
+
+    if (!room.userProfiles[userId]) {
+        room.userProfiles[userId] = {};
+    }
+    room.userProfiles[userId].profileImage = randomProfileImage;
+    userProfile = room.userProfiles[userId];
+    saveRooms(); // Save the randomly assigned profile image immediately.
+  }
+
+  room.users.set(userId, {
     id: userId,
-    nickname: userProfile.nickname || `익명-${userId.substring(0, 5)}`,
-    profileImage: userProfile.profileImage || null,
+    nickname: userProfile.nickname || `User-${userId.substring(0, 5)}`,
+    profileImage: userProfile.profileImage,
+    isAdmin: isAdmin // 유저리스트에 방장 여부 포함
   });
   socket.join(roomId);
 
-  // 1. 새로운 사용자가 접속했으므로, 사용자 목록을 모두에게 브로드캐스트
   broadcastUserList(roomId);
 
-  // 클라이언트로부터 프로필 정보를 받아 업데이트하고 영구 저장
-  socket.on('set_profile', async ({ nickname, profileImage, skipFuture }) => {
-    const room = rooms[roomId];
-    if (room && room.users.has(userId)) {
+  socket.on('set_profile', async ({ nickname }, callback) => {
+    if (room.users.has(userId)) {
+      // 닉네임 중복 체크: 현재 방의 다른 사용자가 이미 사용 중인 닉네임인지 확인합니다.
+      const isNicknameTaken = Array.from(room.users.values()).some(
+        (user) => user.nickname === nickname && user.id !== userId
+      );
+
+      if (isNicknameTaken) {
+        // 닉네임이 중복되면 콜백을 통해 클라이언트에게 실패를 알립니다.
+        if (typeof callback === 'function') {
+          callback({ success: false, message: `닉네임 "${nickname}"은(는) 이미 사용 중입니다.` });
+        }
+        return; // 여기서 처리를 중단합니다.
+      }
+
       const userData = room.users.get(userId);
       userData.nickname = nickname;
-      userData.profileImage = profileImage;
 
-      // 영구 저장소에도 업데이트
       if (!room.userProfiles[userId]) room.userProfiles[userId] = {};
       room.userProfiles[userId].nickname = nickname;
-      room.userProfiles[userId].profileImage = profileImage;
-      if (typeof skipFuture !== 'undefined') {
-        room.userProfiles[userId].skipSetup = skipFuture;
-      }
+      
+      userData.profileImage = room.userProfiles[userId].profileImage;
 
-      await saveRooms(); // 변경사항 파일에 즉시 저장
-      broadcastUserList(roomId); // 프로필이 변경되었으므로 사용자 목록 다시 전송
-    }
-  });
-
-  // '다시 보지 않기' 설정만 별도로 저장
-  socket.on('set_profile_skip', async ({ skipFuture }) => {
-    const room = rooms[roomId];
-    if (room && room.users.has(userId)) {
-      if (!room.userProfiles[userId]) room.userProfiles[userId] = {};
-      room.userProfiles[userId].skipSetup = skipFuture;
       await saveRooms();
+      broadcastUserList(roomId);
+      // 성공적으로 처리되었음을 콜백으로 알립니다.
+      if (typeof callback === 'function') {
+        callback({ success: true });
+      }
     }
   });
 
-  // 사용자가 접속하면 이전 대화 기록을 전송
   (async () => {
     try {
-      const roomName = rooms[roomId]?.name;
-      if (!roomName) return; // 방 정보가 없으면 중단
-
-      const sanitizedRoomName = sanitizeFilename(roomName);
+      const sanitizedRoomName = sanitizeFilename(room.name);
       const filePath = path.join(dataDir, `${sanitizedRoomName}.json`);
       const data = await fs.readFile(filePath, 'utf-8');
-      const messages = JSON.parse(data);
-      // 기록을 현재 접속한 사용자에게만 전송
-      socket.emit('chat_history', messages);
+      socket.emit('chat_history', JSON.parse(data));
     } catch (error) {
-      // 파일이 없는 경우 (첫 대화)에는 아무것도 하지 않음
-      if (error.code !== 'ENOENT') {
-        console.error('Failed to read chat history:', error);
-      }
+      if (error.code !== 'ENOENT') console.error('Failed to read chat history:', error);
     }
   })();
 
-  // 클라이언트의 자동 로그인을 위해 세션 토큰 발급
   const sessionToken = `${userId}:${roomId}`;
-  const currentRoom = rooms[roomId];
-  const currentUserData = currentRoom.users.get(userId);
-  const currentUserProfile = currentRoom.userProfiles?.[userId] || {};
+  const currentUserData = room.users.get(userId);
 
-  socket.emit('session', { userId, sessionToken, roomName: currentRoom?.name, inviteCode: currentRoom?.inviteCode, nickname: currentUserData.nickname, profileImage: currentUserData.profileImage, skipProfileSetup: currentUserProfile.skipSetup || false });
-
-  // 다른 사용자에게 입장 알림
-  // socket.to(roomId).emit('user_joined', { userId, message: `${currentUserData.nickname}님이 입장했습니다.` });
+  socket.emit('session', { 
+    userId, sessionToken, 
+    roomName: room.name, 
+    inviteCode: room.inviteCode, 
+    nickname: currentUserData.nickname, 
+    profileImage: currentUserData.profileImage, 
+    isAdmin: isAdmin // 클라이언트에게 방장 여부 명시적으로 전달
+  });
 
   socket.on('send_message', async (data) => {
-    const senderData = rooms[roomId]?.users.get(userId);
+    const senderData = room.users.get(userId);
     const messageData = {
       userId,
       nickname: senderData?.nickname,
@@ -359,19 +361,9 @@ io.on('connection', (socket) => {
       message: data.message,
       timestamp: new Date(),
     };
-
-    // 1. 받은 메시지를 해당 방의 모든 클라이언트에게 전송
     io.to(roomId).emit('receive_message', messageData);
-
-    // 2. 메시지를 파일에 저장
     try {
-      const roomName = rooms[roomId]?.name;
-      if (!roomName) {
-        console.error(`Failed to save message: Room with ID ${roomId} not found.`);
-        return;
-      }
-
-      const sanitizedRoomName = sanitizeFilename(roomName);
+      const sanitizedRoomName = sanitizeFilename(room.name);
       const filePath = path.join(dataDir, `${sanitizedRoomName}.json`);
       const fileData = await fs.readFile(filePath, 'utf-8');
       const messages = JSON.parse(fileData);
@@ -382,68 +374,85 @@ io.on('connection', (socket) => {
     }
   });
 
-  // 강퇴 기능 (관리자 전용)
-  socket.on('kick_user', async ({ targetUserId, adminToken }) => {
-    const room = rooms[roomId];
-    if (!room || room.adminToken !== adminToken) {
-      // 권한 없음 (오류를 보낸 클라이언트에게만 알림)
-      return socket.emit('system_message', '사용자를 강퇴할 권한이 없습니다.');
-    }
+  // 'claim_admin' 이벤트는 더 이상 필요 없으므로 삭제
+  // socket.on('claim_admin', ...);
 
+  socket.on('kick_user', async ({ targetUserId }) => {
+    // 이제 adminToken 대신 소켓의 isAdmin 플래그를 신뢰
+    if (!socket.isAdmin) {
+      return socket.emit('system_message', 'You do not have permission to kick users.');
+    }
     if (socket.userId === targetUserId) {
-      return socket.emit('system_message', '자기 자신을 강퇴할 수 없습니다.');
+      return socket.emit('system_message', 'You cannot kick yourself.');
     }
-
     const socketsInRoom = await io.in(roomId).fetchSockets();
     const targetSocket = socketsInRoom.find(s => s.userId === targetUserId);
-
     if (targetSocket) {
-      const targetUserData = rooms[roomId]?.users.get(targetUserId);
-      const nickname = targetUserData?.nickname || `사용자(${targetUserId.substring(0, 5)}...)`;
-      // 1. 강퇴 대상에게 강퇴 사실 알림
-      targetSocket.emit('force_disconnect', '방장에 의해 강퇴당했습니다.');
-      // 2. 강퇴 대상 연결 끊기
+      const nickname = room.users.get(targetUserId)?.nickname || `A user`;
+      targetSocket.emit('force_disconnect', 'You have been kicked by the host.');
       targetSocket.disconnect();
-      // 3. 방에 있는 다른 사람들에게 알림
-      io.to(roomId).emit('system_message', `${nickname}님이 강퇴당했습니다.`);
-      // 4. 사용자 목록을 다시 브로드캐스트
-      broadcastUserList(roomId);
-      console.log(`[User Kicked] User ${targetUserId} from room ${roomId}`);
+      io.to(roomId).emit('system_message', `${nickname} has been kicked.`);
+      // 유저리스트 업데이트는 disconnect 이벤트에서 자동으로 처리됨
     } else {
-      socket.emit('system_message', '강퇴하려는 사용자를 찾을 수 없습니다.');
+      socket.emit('system_message', 'The user to be kicked could not be found.');
     }
   });
 
+  socket.on('destroy_room', async () => {
+    if (!socket.isAdmin) {
+      return socket.emit('system_message', 'You do not have permission to destroy this room.');
+    }
+    
+    try {
+      io.to(roomId).emit('system_message', 'The host has destroyed the room. Disconnecting in 3 seconds.');
+      // 모든 클라이언트의 연결을 강제로 끊기 전에 메시지 전송 보장
+      setTimeout(async () => {
+        io.to(roomId).disconnectSockets(true);
+
+        const sanitizedRoomName = sanitizeFilename(room.name);
+        const filePath = path.join(dataDir, `${sanitizedRoomName}.json`);
+        await fs.unlink(filePath);
+    
+        delete rooms[roomId];
+        await saveRooms();
+    
+        console.log(`[Room Destroyed] ID: ${roomId}, Name: ${room.name}`);
+      }, 3000);
+
+    } catch (error) {
+      console.error(`[Error Destroying Room] ID: ${roomId}`, error);
+      socket.emit('system_message', 'An error occurred while destroying the room.');
+    }
+  });
+
+
   socket.on('disconnect', () => {
-    if (rooms[roomId] && rooms[roomId].users.has(userId)) {
-      const userData = rooms[roomId].users.get(userId);
-      const nickname = userData.nickname;
-      rooms[roomId].users.delete(userId);
-      console.log(`[User Disconnected] User ${userId.substring(0, 5)} (${nickname}) disconnected from room ${roomId.substring(0, 5)}`);
-      // 다른 사용자에게 퇴장 알림
-      // io.to(roomId).emit('user_left', { userId, message: `${nickname}님이 퇴장했습니다.` });
-      // 사용자가 나갔으므로, 사용자 목록을 모두에게 브로드캐스트
+    if (room && room.users.has(userId)) {
+      // 만약 접속을 종료하는 유저가 방장이었다면, activeAdmins 맵에서 제거
+      if (isAdmin && activeAdmins.get(roomId) === userId) {
+        activeAdmins.delete(roomId);
+        console.log(`[Host Left] Room: ${roomId.substring(0, 5)}. Now available for new host login.`);
+      }
+
+      // 방장이 나가도 방은 유지됨. 방장직도 유지됨.
+      const nickname = room.users.get(userId)?.nickname;
+      room.users.delete(userId);
+      console.log(`[User Disconnected] User ${userId.substring(0, 5)} (${nickname}) disconnected`);
       broadcastUserList(roomId);
     }
   });
 });
 
-// 하루(24시간)가 지난 채팅 로그 파일을 자동으로 삭제하는 스케줄러
-// 매 시간 정각에 실행됩니다.
 cron.schedule('0 * * * *', async () => {
   console.log('[Scheduler] Running job to delete old chat files...');
   try {
     const files = await fs.readdir(dataDir);
     const twentyFourHoursAgo = Date.now() - (24 * 60 * 60 * 1000);
-
     for (const file of files) {
-      // .json 파일만 대상으로 함
       if (path.extname(file) !== '.json') continue;
-
       const filePath = path.join(dataDir, file);
       try {
         const stats = await fs.stat(filePath);
-        // 파일 생성 시간(birthtime)이 24시간보다 오래되었으면, 파일 내용은 비우고 파일 자체는 유지합니다.
         if (stats.birthtime.getTime() < twentyFourHoursAgo) {
           await fs.writeFile(filePath, '[]', 'utf-8');
           console.log(`[Scheduler] Cleared chat history for old room: ${file}`);
@@ -458,12 +467,10 @@ cron.schedule('0 * * * *', async () => {
 });
 
 const startServer = async () => {
-  // 서버가 시작되기 전에 파일에서 방 정보를 불러옵니다.
   await loadRooms();
   server.listen(PORT, () => {
     console.log(`✅ NaTalk Server is running on http://localhost:${PORT}`);
   });
 };
 
-// 서버 시작
 startServer();

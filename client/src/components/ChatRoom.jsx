@@ -1,7 +1,6 @@
+// ... (imports and other components remain the same)
 import React, { useState, useEffect, useRef, Fragment } from 'react';
 import { ProfileSetupModal } from './ProfileSetupModal';
-
-const API_URL = import.meta.env.PROD ? 'http://211.188.63.148:3002' : 'http://localhost:3002';
 
 // 말풍선 컴포넌트
 function MessageBubble({ message, isOwn }) {
@@ -14,7 +13,6 @@ function MessageBubble({ message, isOwn }) {
     });
   };
 
-  // 내가 보낸 메시지
   if (isOwn) {
     return (
       <div className="flex justify-end">
@@ -28,18 +26,14 @@ function MessageBubble({ message, isOwn }) {
     );
   }
 
-  // 다른 사람이 보낸 메시지
+  const userNickname = message.nickname || `User-${message.userId.substring(0, 5)}`;
+  const profileImage = message.profileImage || `https://i.pravatar.cc/40?u=${message.userId}`;
+  
   return (
     <div className="flex items-start space-x-3">
-      {/* 3단계: 동그란 프로필 이미지 */}
-      <img
-        className="w-10 h-10 rounded-full"
-        src={message.profileImage || `https://i.pravatar.cc/40?u=${message.userId}`}
-        alt="profile"
-      />
+      <img className="w-10 h-10 rounded-full" src={profileImage} alt="profile" />
       <div className="flex flex-col items-start">
-        {/* 3단계: 말풍선 위 작은 이름 */}
-        <span className="text-sm text-gray-700">{message.nickname || message.userId.substring(0, 5)}</span>
+        <span className="text-sm text-gray-700">{userNickname}</span>
         <div className="flex items-end space-x-2">
           <p className="px-4 py-2 text-black bg-white rounded-lg rounded-bl-none">
             {message.message}
@@ -52,21 +46,18 @@ function MessageBubble({ message, isOwn }) {
 }
 
 // 참여자 목록을 보여주는 사이드바 컴포넌트
-function ParticipantsSidebar({
-  participants,
-  currentUser,
-  isAdmin,
-  onKick,
-  onClose,
-}) {
+function ParticipantsSidebar({ participants, currentUser, onKick, onClose }) {
+  // The user object passed to this component now contains the definitive isAdmin status
+  const isCurrentUserAdmin = currentUser.isAdmin;
+
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 z-40" onClick={onClose}>
       <div
         className="fixed top-0 right-0 h-full w-64 sm:w-80 bg-white shadow-lg p-4 z-50 transform transition-transform"
-        onClick={(e) => e.stopPropagation()} // 사이드바 내부 클릭 시 닫히지 않도록 함
+        onClick={(e) => e.stopPropagation()}
       >
         <div className="flex justify-between items-center mb-4">
-          <h2 className="text-lg font-bold">참여자 목록 ({participants.length})</h2>
+          <h2 className="text-lg font-bold">참가자 ({participants.length})</h2>
           <button onClick={onClose} className="text-2xl font-bold">&times;</button>
         </div>
         <ul>
@@ -78,9 +69,9 @@ function ParticipantsSidebar({
                   src={participant.profileImage || `https://i.pravatar.cc/40?u=${participant.id}`}
                   alt="participant"
                 />
-                <span className="text-sm truncate">{participant.nickname}</span>
+                <span className="text-sm truncate">{participant.nickname} {participant.isAdmin ? '👑' : ''}</span>
               </div>
-              {isAdmin && currentUser.id !== participant.id && (
+              {isCurrentUserAdmin && currentUser.id !== participant.id && (
                 <button
                   onClick={() => onKick(participant.id)}
                   className="px-2 py-1 text-xs text-white bg-red-600 rounded-md hover:bg-red-700 flex-shrink-0 ml-2"
@@ -96,9 +87,10 @@ function ParticipantsSidebar({
   );
 }
 
+
 // 초대 정보 모달 컴포넌트
 function InviteModal({ roomName, inviteCode, onClose }) {
-  const inviteText = `방 이름: ${roomName}\n초대 코드: ${inviteCode}\n\n위 정보와 설정하신 비밀번호를 공유하여 친구를 초대하세요.`;
+  const inviteText = `방 이름: ${roomName}\n초대 코드: ${inviteCode}\n\n이 정보와 설정한 비밀번호를 친구에게 공유하여 초대하세요.`;
 
   const copyToClipboard = () => {
     navigator.clipboard.writeText(inviteText).then(() => {
@@ -120,10 +112,10 @@ function InviteModal({ roomName, inviteCode, onClose }) {
             초대 코드: <span className="font-semibold">{inviteCode}</span>
           </p>
           <p className="text-sm text-gray-600 mt-2">
-            위 정보와 방 비밀번호를 함께 전달해주세요.
+            방 비밀번호도 함께 알려주세요.
           </p>
-          <p className="text-sm text-gray-600 mt-2">
-            대화내용은24시간만 유지됩니다.
+           <p className="text-sm text-gray-600 mt-2">
+            대화 내용은 24시간 동안 보관됩니다.
           </p>
         </div>
         <button onClick={copyToClipboard} className="w-full py-2 mb-2 text-white bg-blue-600 rounded-md hover:bg-blue-700 font-bold">
@@ -141,7 +133,7 @@ function InviteModal({ roomName, inviteCode, onClose }) {
 export function ChatRoom({ socket, user, onLogout }) {
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
-  const [isAdmin, setIsAdmin] = useState(false);
+  // 로컬 isAdmin 상태 제거. `user.isAdmin`을 직접 사용
   const [participants, setParticipants] = useState([]);
   const [showParticipants, setShowParticipants] = useState(false);
   const [showProfileSetup, setShowProfileSetup] = useState(false);
@@ -154,17 +146,10 @@ export function ChatRoom({ socket, user, onLogout }) {
 
   useEffect(scrollToBottom, [messages]);
 
-  // 컴포넌트 마운트 시 방장인지 확인
   useEffect(() => {
-    const adminToken = localStorage.getItem(`natalk-admin-${user.roomId}`);
-    if (adminToken) {
-      setIsAdmin(true);
-    }
-
-    // 서버에서 받은 user 정보 기반으로 프로필 설정 모달 표시 여부 결정
-    // user.skipProfileSetup: '다시 보지 않기' 설정 값
-    // user.nickname.startsWith('익명-'): 프로필이 설정되지 않은 기본 상태인지 확인
-    if (user && !user.skipProfileSetup && user.nickname?.startsWith('익명-')) {
+    // 프로필 설정 모달 표시 여부는 user 객체에 따라 결정
+    // 서버에서 받은 닉네임이 기본값 형태('User-xxxxx')이면 모달을 띄웁니다.
+    if (user && user.nickname && user.nickname.startsWith('User-')) {
       setShowProfileSetup(true);
     }
   }, [user]);
@@ -173,31 +158,18 @@ export function ChatRoom({ socket, user, onLogout }) {
     if (!socket) return;
 
     const handleReceiveMessage = (message) => setMessages((prev) => [...prev, message]);
-    const handleSystemMessage = (text) => setMessages((prev) => [...prev, { type: 'system', text }]);
+    const handleSystemMessage = (text) => setMessages((prev) => [...prev, { type: 'system', text, timestamp: new Date() }]);
     
-    // 서버로부터 이전 대화 기록을 받아 상태에 설정
-    socket.on('chat_history', (history) => {
-      setMessages(history);
-    });
-
-    // 참여자 목록 업데이트 수신
-    socket.on('update_user_list', (userList) => {
-      console.log(userList);
-      setParticipants(userList);
-    });
-
+    socket.on('chat_history', (history) => setMessages(history));
+    socket.on('update_user_list', (userList) => setParticipants(userList));
     socket.on('receive_message', handleReceiveMessage);
-    socket.on('user_joined', (data) => handleSystemMessage(data.message));
-    socket.on('user_left', (data) => handleSystemMessage(data.message));
-    socket.on('system_message', (text) => handleSystemMessage(`[공지] ${text}`));
+    socket.on('system_message', (text) => handleSystemMessage(`[알림] ${text}`));
 
     return () => {
-      socket.off('receive_message', handleReceiveMessage);
-      socket.off('user_joined');
-      socket.off('user_left');
-      socket.off('system_message');
-      socket.off('update_user_list');
       socket.off('chat_history');
+      socket.off('update_user_list');
+      socket.off('receive_message');
+      socket.off('system_message');
     };
   }, [socket]);
 
@@ -209,100 +181,51 @@ export function ChatRoom({ socket, user, onLogout }) {
     }
   };
 
-  const handleDestroyRoom = async () => {
-    if (!window.confirm('정말로 이 방을 삭제하시겠습니까? 모든 대화 내용이 영구적으로 사라집니다.')) {
-      return;
-    }
-
-    const adminToken = localStorage.getItem(`natalk-admin-${user.roomId}`);
-    if (!adminToken) {
-      alert('관리자 토큰을 찾을 수 없습니다.');
-      return;
-    }
-
-    try {
-      const response = await fetch(`${API_URL}/room/${user.roomId}`, {
-        method: 'DELETE',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ adminToken }),
-      });
-
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.message || '방 삭제에 실패했습니다.');
-      }
-      alert('방이 성공적으로 삭제되었습니다.');
-    } catch (error) {
-      alert(error.message);
+  const handleDestroyRoom = () => {
+    if (!window.confirm('정말로 이 방을 삭제하시겠습니까? 모든 대화 내용이 영구적으로 삭제됩니다.')) return;
+    if (socket && user.isAdmin) {
+      socket.emit('destroy_room');
+    } else {
+      alert('방을 삭제할 권한이 없습니다.');
     }
   };
 
   const handleKickUser = (targetUserId) => {
-    if (!window.confirm(`사용자(${targetUserId.substring(0, 8)}...)님을 강퇴하시겠습니까?`)) {
-      return;
-    }
-    const adminToken = localStorage.getItem(`natalk-admin-${user.roomId}`);
-    if (socket && adminToken) {
-      socket.emit('kick_user', { targetUserId, adminToken });
+    if (!window.confirm(`정말로 이 사용자(${targetUserId.substring(0, 8)}...)를 강퇴하시겠습니까?`)) return;
+    if (socket && user.isAdmin) {
+      socket.emit('kick_user', { targetUserId });
     } else {
       alert('강퇴 권한을 확인할 수 없습니다.');
     }
   };
 
-  const handleProfileSet = ({ nickname, profileImage, skipFuture }) => {
-    // 서버에 프로필 정보와 '다시 보지 않기' 설정을 한번에 전송
-    socket.emit('set_profile', { nickname, profileImage, skipFuture });
-    setShowProfileSetup(false);
-  };
-
-  const handleProfileSkip = () => {
-    // '나중에 하기'를 누르면, 다시 묻지 않도록 서버에 설정을 영구 저장합니다.
-    socket.emit('set_profile_skip', { skipFuture: true });
-    setShowProfileSetup(false);
-  };
-
   return (
     <Fragment>
-      {showInviteModal && isAdmin && (
-        <InviteModal
-          roomName={user.roomName}
-          inviteCode={user.inviteCode}
-          onClose={() => setShowInviteModal(false)}
-        />
+      {showInviteModal && user.isAdmin && (
+        <InviteModal roomName={user.roomName} inviteCode={user.inviteCode} onClose={() => setShowInviteModal(false)} />
       )}
-      {showProfileSetup && <ProfileSetupModal onProfileSet={handleProfileSet} onSkip={handleProfileSkip} />}
+      {showProfileSetup && <ProfileSetupModal
+          socket={socket}
+          onClose={() => setShowProfileSetup(false)}
+        />}
       {showParticipants && (
-        <ParticipantsSidebar
-          participants={participants}
-          currentUser={user}
-          isAdmin={isAdmin}
-          onKick={handleKickUser}
-          onClose={() => setShowParticipants(false)}
-        />
+        <ParticipantsSidebar participants={participants} currentUser={user} onKick={handleKickUser} onClose={() => setShowParticipants(false)} />
       )}
       <div className="flex flex-col h-screen bg-natalk-bg">
-        <header className="flex items-center justify-between p-4 bg-white bg-opacity-50 shadow-sm">
-          <h1 className="text-xl font-bold truncate" title={user.roomName}>{user.roomName || 'NaTalk'}</h1>
+        <header className="flex items-center justify-between p-4 bg-white bg-opacity-50 shadow-sm flex-wrap">
+          <h1 className="text-xl font-bold truncate" title={user.roomName}>{user.roomName || 'NaTalk'} {user.isAdmin ? '👑' : ''}</h1>
           <div className="flex items-center space-x-2">
-            {isAdmin && (
-              <button
-                onClick={() => setShowInviteModal(true)}
-                className="px-3 py-1 text-sm text-white bg-green-600 rounded-md hover:bg-green-700"
-              >
-                초대하기
+            {user.isAdmin && (
+              <button onClick={() => setShowInviteModal(true)} className="px-3 py-1 text-sm text-white bg-green-600 rounded-md hover:bg-green-700">
+                초대
               </button>
             )}
             <button onClick={() => setShowParticipants(true)} className="px-3 py-1 text-sm text-gray-700 bg-white rounded-md border border-gray-300 hover:bg-gray-50">
-              참여자 ({participants.length})
+              참가자 ({participants.length})
             </button>
-            {isAdmin && (
-              <button
-                onClick={handleDestroyRoom}
-                className="px-3 py-1 text-sm text-white bg-black rounded-md hover:bg-gray-800"
-              >
-                방 폭파
+            {user.isAdmin && (
+              <button onClick={handleDestroyRoom} className="px-3 py-1 text-sm text-white bg-black rounded-md hover:bg-gray-800">
+                방 삭제
               </button>
             )}
             <button onClick={onLogout} className="px-3 py-1 text-sm text-white bg-red-500 rounded-md">

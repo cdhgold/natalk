@@ -13,10 +13,9 @@ function App() {
     return <ChatRoom user={user} socket={socket} onLogout={logout} />;
   }
 
-  const handleRoomCreated = (roomId, password, adminToken) => {
-    // 방 생성 후, adminToken을 roomId와 함께 localStorage에 저장하고 바로 로그인 시도
-    localStorage.setItem(`natalk-admin-${roomId}`, adminToken);
-    login(roomId, password);
+  const handleRoomCreated = (roomId, credentials) => {
+    // 방 생성 후, 생성자는 이메일을 사용하여 방장으로 바로 로그인합니다.
+    login(roomId, credentials);
   };
 
   if (view === 'create') {
