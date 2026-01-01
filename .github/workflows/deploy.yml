@@ -33,16 +33,19 @@ jobs:
           key: ${{ secrets.NAVER_CLOUD_SSH_KEY }}
           script: |
             # 배포 스크립트
+            # 최신 이미지를 Docker Hub에서 가져옵니다.
             docker pull ${{ secrets.DOCKER_USERNAME }}/vibe-talk:${{ github.sha }}
+            # 기존 컨테이너가 있으면 중지하고 삭제합니다.
             docker stop vibe-talk || true
             docker rm vibe-talk || true
-            # rooms.json 파일이 없을 경우를 대비해 미리 생성합니다.
-            touch /root/data/talk/rooms.json
+            # 데이터 영속성을 위한 호스트 디렉토리를 생성합니다.
+            mkdir -p /root/natalk-data
+            # 새 버전으로 컨테이너를 실행합니다.
+            # 호스트의 /root/natalk-data 디렉토리를 컨테이너의 /data 디렉토리에 연결합니다.
             docker run -d --name vibe-talk \
               --restart always \
               -p 3002:3002 \
-              -v /root/data/talk:/app/server/data \
-              -v /root/data/talk/rooms.json:/app/server/rooms.json \
+              -v /root/natalk-data:/data \
               ${{ secrets.DOCKER_USERNAME }}/vibe-talk:${{ github.sha }}
-            # 사용하지 않는 Docker 이미지 정리
+            # 사용하지 않는 Docker 이미지 정리 (공간 확보)
             docker image prune -af
