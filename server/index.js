@@ -27,7 +27,7 @@ const clientPublicPath = path.join(PROJECT_ROOT, 'client', 'public');
 // 프로덕션 환경에서 첫 페이지로 intro.html을 제공합니다.
 // express.static보다 먼저 와야 루트 경로('/') 요청을 가로챌 수 있습니다.
 app.get('/', (req, res) => {
-  res.sendFile(path.join(PROJECT_ROOT, 'client', 'intro.html'));
+  res.sendFile(path.join(clientPublicPath, 'intro.html'));
 });
 
 // 정적 파일 제공
