@@ -176,10 +176,6 @@ app.get('/api/rooms-status', (req, res) => {
   res.status(200).json(roomStatuses);
 });
 
-// 프로덕션 환경에서 첫 페이지로 intro.html을 제공합니다.
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, '..', 'client', 'intro.html'));
-});
 
 app.get('*', (req, res) => {
   res.sendFile(path.join(clientBuildPath, 'index.html'));
