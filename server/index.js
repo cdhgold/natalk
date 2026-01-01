@@ -19,6 +19,13 @@ const roomsFilePath = path.join(__dirname, 'rooms.json');
 fs.mkdir(dataDir, { recursive: true }).catch(console.error);
 
 const clientBuildPath = path.join(__dirname, '..', 'client', 'dist');
+
+// 프로덕션 환경에서 첫 페이지로 intro.html을 제공합니다.
+// express.static보다 먼저 와야 루트 경로('/') 요청을 가로챌 수 있습니다.
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'client', 'intro.html'));
+});
+
 app.use(express.static(clientBuildPath));
 
 // client/public 폴더의 정적 파일(프로필 이미지 등)을 제공하기 위해 추가합니다.
