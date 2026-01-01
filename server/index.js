@@ -14,27 +14,30 @@ app.use(express.json());
 
 const server = http.createServer(app);
 const PORT = process.env.PORT || 3002;
+
+// --- 경로 재구성 시작 ---
+const PROJECT_ROOT = path.resolve(__dirname, '..');
 const dataDir = path.join(__dirname, 'data');
 const roomsFilePath = path.join(__dirname, 'rooms.json');
 fs.mkdir(dataDir, { recursive: true }).catch(console.error);
 
-const clientBuildPath = path.join(__dirname, '..', 'client', 'dist');
+const clientBuildPath = path.join(PROJECT_ROOT, 'client', 'dist');
+const clientPublicPath = path.join(PROJECT_ROOT, 'client', 'public');
 
 // 프로덕션 환경에서 첫 페이지로 intro.html을 제공합니다.
 // express.static보다 먼저 와야 루트 경로('/') 요청을 가로챌 수 있습니다.
 app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, '..', 'client', 'intro.html'));
+  res.sendFile(path.join(PROJECT_ROOT, 'client', 'intro.html'));
 });
 
+// 정적 파일 제공
 app.use(express.static(clientBuildPath));
-
-// client/public 폴더의 정적 파일(프로필 이미지 등)을 제공하기 위해 추가합니다.
-// 이렇게 하면 /default-avatar.png 같은 경로로 클라이언트에서 이미지를 요청할 수 있습니다.
-const clientPublicPath = path.join(__dirname, '..', 'client', 'public');
 app.use(express.static(clientPublicPath));
+// --- 경로 재구성 끝 ---
+
 
 function sanitizeFilename(name) {
-  return name.replace(/[\\/:\*\?"<>\|]/g, '_');
+  return name.replace(/[\\/:*"<>\|]/g, '_');
 }
 
 const generateInviteCode = () => {
@@ -42,15 +45,12 @@ const generateInviteCode = () => {
 };
 
 let rooms = {};
-// 현재 접속 중인 방장 목록을 관리하는 휘발성 데이터
-// { roomId -> hostUserId }
 const activeAdmins = new Map();
 
 const saveRooms = async () => {
   try {
     const roomsToSave = {};
     for (const roomId in rooms) {
-      // users 맵과 같은 휘발성 데이터는 제외하고 저장
       const { users, ...roomData } = rooms[roomId];
       if (!roomData.userProfiles) {
         roomData.userProfiles = {};
@@ -71,11 +71,9 @@ const loadRooms = async () => {
       const roomData = loadedRooms[roomId];
       rooms[roomId] = {
         ...roomData,
-        // 서버 시작 시 모든 방의 접속자 목록은 비어있음
         users: new Map(), 
         userProfiles: roomData.userProfiles || {},
       };
-      // 방 채팅 로그 파일 확인 및 생성
       const sanitizedRoomName = sanitizeFilename(roomData.name);
       const filePath = path.join(dataDir, `${sanitizedRoomName}.json`);
       try {
@@ -99,8 +97,8 @@ const loadRooms = async () => {
 };
 
 app.post('/create-room', async (req, res) => {
-  const { password, roomName, email } = req.body; // 'email' 추가
-  if (!password || !roomName || !email) { // 'email' 필드 검증
+  const { password, roomName, email } = req.body;
+  if (!password || !roomName || !email) {
     return res.status(400).json({ message: 'Room name, password, and email are required.' });
   }
 
@@ -124,15 +122,15 @@ app.post('/create-room', async (req, res) => {
   while (!isCodeUnique) {
     inviteCode = generateInviteCode();
     const codeInUse = Object.values(rooms).some(r => r.inviteCode === inviteCode);
-    if (!codeInUse) isCodeUnique = true;
+    if (!isCodeUnique) isCodeUnique = true;
   }
 
   rooms[roomId] = {
     name: roomName,
     password,
-    ownerEmail: email, // 방장 이메일 저장
+    ownerEmail: email,
     inviteCode,
-    hostId: null, // hostId는 이제 사용되지 않거나 다른 용도로 사용될 수 있음
+    hostId: null,
     users: new Map(),
     userProfiles: {},
     createdAt: new Date(),
@@ -143,7 +141,6 @@ app.post('/create-room', async (req, res) => {
     await saveRooms();
     console.log(`[File Created] For room: ${roomName}, Path: ${filePath}`);
     console.log(`[Room Created] Name: ${roomName}, ID: ${roomId}, Owner Email: ${email}`);
-    // creationToken은 더 이상 반환하지 않음
     res.status(201).json({ roomId, inviteCode });
   } catch (error) {
     console.error('Failed to create chat file:', error);
@@ -160,21 +157,12 @@ const broadcastUserList = (roomId) => {
 };
 
 app.delete('/room/:roomId', async (req, res) => {
-  // 방 삭제 로직은 이제 소켓 이벤트(방장만 가능)로 처리하는 것이 더 안전함
-  // HTTP DELETE는 더 이상 사용하지 않거나, 매우 강력한 인증(예: JWT) 필요
-  // 여기서는 기능을 유지하되, 콘솔에 경고를 출력
   console.warn(`[Security] HTTP DELETE /room/${req.params.roomId} is deprecated. Use socket event 'destroy_room'.`);
-  const { roomId } = req.params;
-  // adminToken 대신 hostId를 확인해야 하나, HTTP 요청에서는 사용자 식별이 어려움.
-  // 따라서 이 엔드포인트는 사실상 사용 불가 상태가 되어야 함.
-  // 기능적으로 남겨두지만, 실제 운영에서는 제거하거나 재설계 필요.
   res.status(403).json({ message: 'This endpoint is deprecated for security reasons.'});
 });
 
-// 방 목록 및 현재 활성화 상태(접속자 수)를 반환하는 API 엔드포인트
 app.get('/api/rooms-status', (req, res) => {
   const roomStatuses = Object.entries(rooms).map(([roomId, room]) => ({
-    // 민감한 정보(password, ownerEmail 등)는 제외하고 필요한 정보만 반환합니다.
     roomId,
     name: room.name,
     userCount: room.users.size,
@@ -183,7 +171,7 @@ app.get('/api/rooms-status', (req, res) => {
   res.status(200).json(roomStatuses);
 });
 
-
+// React 앱으로 라우팅을 위임합니다.
 app.get('*', (req, res) => {
   res.sendFile(path.join(clientBuildPath, 'index.html'));
 });
@@ -196,18 +184,14 @@ io.use((socket, next) => {
   const { roomIdentifier, password, email, sessionToken } = socket.handshake.auth;
   socket.isAdmin = false;
 
-  // 세션 토큰이 있으면, 재접속으로 간주하고 우선 처리
   if (sessionToken) {
     const [userId, tokenRoomId] = sessionToken.split(':');
     const room = rooms[tokenRoomId];
-    // 서버 재시작 등으로 room.userProfiles가 없을 수 있으므로 안전하게 체크
     if (room && room.userProfiles && room.userProfiles[userId]) {
       console.log(`[Session] Reconnecting user ${userId.substring(0,5)} to room ${tokenRoomId.substring(0,5)}`);
       socket.roomId = tokenRoomId;
       socket.userId = userId;
-      // 재접속 시 방장 여부 다시 확인
       if (room.hostId === userId) {
-        // 방장이 재접속하는 경우, activeAdmins에 다시 등록
         if (activeAdmins.has(tokenRoomId) && activeAdmins.get(tokenRoomId) !== userId) {
           console.log(`[Host Reconnect Denied] Host already active for room ${tokenRoomId.substring(0,5)}`);
           return next(new Error('The room owner is already logged in from another device.'));
@@ -235,24 +219,20 @@ io.use((socket, next) => {
 
   socket.roomId = actualRoomId;
 
-  // 방장 로그인 시도
   if (email) {
     if (room.ownerEmail === email) {
-      // 이미 다른 기기에서 방장이 접속해 있는지 확인
       if (activeAdmins.has(actualRoomId)) {
         console.log(`[Host Login Denied] Host already active for room ${actualRoomId.substring(0,5)}`);
         return next(new Error('The room owner is already logged in from another device.'));
       }
 
-      // 방장은 이메일 기반의 영구 ID를 사용. 이를 통해 프로필 정보를 유지.
       const adminPersistentId = crypto.createHash('sha256').update(email).digest('hex');
       socket.userId = adminPersistentId;
 
-      // 이메일이 일치하면 방장으로 인정
       socket.isAdmin = true;
-      room.hostId = socket.userId; // 현재 접속의 userId를 방장으로 설정
-      activeAdmins.set(actualRoomId, socket.userId); // 현재 접속중인 방장으로 등록
-      saveRooms(); // 방장 ID 변경사항 저장
+      room.hostId = socket.userId;
+      activeAdmins.set(actualRoomId, socket.userId);
+      saveRooms();
       console.log(`[Host Login] User ${socket.userId.substring(0,5)} logged in as host for room ${actualRoomId.substring(0,5)}`);
       return next();
     } else {
@@ -260,8 +240,6 @@ io.use((socket, next) => {
     }
   }
 
-  // 게스트 로그인 시도
-  // 게스트는 세션 토큰이 없는 한, 매번 새로운 임시 ID를 발급받음.
   socket.userId = uuidv4();
   if (room.password !== password) return next(new Error('Incorrect password.'));
   
@@ -281,7 +259,6 @@ io.on('connection', (socket) => {
 
   let userProfile = room.userProfiles?.[userId];
 
-  // If user has no profile or no nickname, set up a new one with a random avatar.
   if (!userProfile || !userProfile.nickname) {
     const randomImageIndex = Math.floor(Math.random() * 11) + 1;
     const randomProfileImage = `/profile${randomImageIndex}.png`;
@@ -291,14 +268,14 @@ io.on('connection', (socket) => {
     }
     room.userProfiles[userId].profileImage = randomProfileImage;
     userProfile = room.userProfiles[userId];
-    saveRooms(); // Save the randomly assigned profile image immediately.
+    saveRooms();
   }
 
   room.users.set(userId, {
     id: userId,
     nickname: userProfile.nickname || `User-${userId.substring(0, 5)}`,
     profileImage: userProfile.profileImage,
-    isAdmin: isAdmin // 유저리스트에 방장 여부 포함
+    isAdmin: isAdmin
   });
   socket.join(roomId);
 
@@ -306,17 +283,15 @@ io.on('connection', (socket) => {
 
   socket.on('set_profile', async ({ nickname }, callback) => {
     if (room.users.has(userId)) {
-      // 닉네임 중복 체크: 현재 방의 다른 사용자가 이미 사용 중인 닉네임인지 확인합니다.
       const isNicknameTaken = Array.from(room.users.values()).some(
         (user) => user.nickname === nickname && user.id !== userId
       );
 
       if (isNicknameTaken) {
-        // 닉네임이 중복되면 콜백을 통해 클라이언트에게 실패를 알립니다.
         if (typeof callback === 'function') {
           callback({ success: false, message: `닉네임 "${nickname}"은(는) 이미 사용 중입니다.` });
         }
-        return; // 여기서 처리를 중단합니다.
+        return;
       }
 
       const userData = room.users.get(userId);
@@ -329,7 +304,6 @@ io.on('connection', (socket) => {
 
       await saveRooms();
       broadcastUserList(roomId);
-      // 성공적으로 처리되었음을 콜백으로 알립니다.
       if (typeof callback === 'function') {
         callback({ success: true });
       }
@@ -356,7 +330,7 @@ io.on('connection', (socket) => {
     inviteCode: room.inviteCode, 
     nickname: currentUserData.nickname, 
     profileImage: currentUserData.profileImage, 
-    isAdmin: isAdmin // 클라이언트에게 방장 여부 명시적으로 전달
+    isAdmin: isAdmin
   });
 
   socket.on('send_message', async (data) => {
@@ -381,11 +355,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // 'claim_admin' 이벤트는 더 이상 필요 없으므로 삭제
-  // socket.on('claim_admin', ...);
-
   socket.on('kick_user', async ({ targetUserId }) => {
-    // 이제 adminToken 대신 소켓의 isAdmin 플래그를 신뢰
     if (!socket.isAdmin) {
       return socket.emit('system_message', 'You do not have permission to kick users.');
     }
@@ -399,7 +369,6 @@ io.on('connection', (socket) => {
       targetSocket.emit('force_disconnect', 'You have been kicked by the host.');
       targetSocket.disconnect();
       io.to(roomId).emit('system_message', `${nickname} has been kicked.`);
-      // 유저리스트 업데이트는 disconnect 이벤트에서 자동으로 처리됨
     } else {
       socket.emit('system_message', 'The user to be kicked could not be found.');
     }
@@ -412,7 +381,6 @@ io.on('connection', (socket) => {
     
     try {
       io.to(roomId).emit('system_message', 'The host has destroyed the room. Disconnecting in 3 seconds.');
-      // 모든 클라이언트의 연결을 강제로 끊기 전에 메시지 전송 보장
       setTimeout(async () => {
         io.to(roomId).disconnectSockets(true);
 
@@ -432,16 +400,13 @@ io.on('connection', (socket) => {
     }
   });
 
-
   socket.on('disconnect', () => {
     if (room && room.users.has(userId)) {
-      // 만약 접속을 종료하는 유저가 방장이었다면, activeAdmins 맵에서 제거
       if (isAdmin && activeAdmins.get(roomId) === userId) {
         activeAdmins.delete(roomId);
         console.log(`[Host Left] Room: ${roomId.substring(0, 5)}. Now available for new host login.`);
       }
 
-      // 방장이 나가도 방은 유지됨. 방장직도 유지됨.
       const nickname = room.users.get(userId)?.nickname;
       room.users.delete(userId);
       console.log(`[User Disconnected] User ${userId.substring(0, 5)} (${nickname}) disconnected`);
