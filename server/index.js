@@ -22,24 +22,22 @@ const roomsFilePath = path.join(__dirname, 'rooms.json');
 fs.mkdir(dataDir, { recursive: true }).catch(console.error);
 
 const clientBuildPath = path.join(PROJECT_ROOT, 'client', 'dist');
-const clientPublicPath = path.join(PROJECT_ROOT, 'client', 'public');
 
 // 프로덕션 환경에서 첫 페이지로 intro.html을 제공합니다.
 // express.static보다 먼저 와야 루트 경로('/') 요청을 가로챌 수 있습니다.
 app.get('/', async (req, res) => {
-  const targetPath = path.join(clientPublicPath, 'intro.html');
+  const targetPath = path.join(clientBuildPath, 'intro.html');
   try {
     await fs.access(targetPath); // 파일이 있는지 먼저 확인
     res.sendFile(targetPath);
   } catch (error) {
     console.error(`[File Error] intro.html not found at: ${targetPath}`);
     // 파일이 없으면 404를 보내거나 클라이언트 dist의 index.html로 대체
-    res.status(404).send("서비스 준비 중입니다. (intro.html 누락)");
+    res.status(404).send("서비스 준비 중입니다. (intro.html not found)");
   }
 });
 // 정적 파일 제공
 app.use(express.static(clientBuildPath));
-app.use(express.static(clientPublicPath));
 // --- 경로 재구성 끝 ---
 
 
