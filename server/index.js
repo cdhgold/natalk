@@ -17,8 +17,10 @@ const PORT = process.env.PORT || 3002;
 
 // --- 경로 재구성 시작 ---
 const PROJECT_ROOT = path.resolve(__dirname, '..');
-const dataDir = path.join(__dirname, 'data');
-const roomsFilePath = path.join(__dirname, 'rooms.json');
+const dataRoot = path.resolve('/data'); // 데이터 영속성을 위한 루트 경로
+const dataDir = path.join(dataRoot, 'talk'); // 채팅 로그 저장 경로
+const roomsFilePath = path.join(dataRoot, 'rooms.json'); // 방 목록 파일 경로
+// 서버 시작 시 데이터 디렉토리들이 존재하는지 확인하고 없으면 생성
 fs.mkdir(dataDir, { recursive: true }).catch(console.error);
 
 const clientBuildPath = path.join(PROJECT_ROOT, 'client', 'dist');
@@ -70,23 +72,25 @@ const saveRooms = async () => {
 
 const loadRooms = async () => {
   try {
-    const data = await fs.readFile(roomsFilePath, 'utf-8');
-    const loadedRooms = JSON.parse(data);
-    for (const roomId in loadedRooms) {
-      const roomData = loadedRooms[roomId];
-      rooms[roomId] = {
-        ...roomData,
-        users: new Map(), 
-        userProfiles: roomData.userProfiles || {},
-      };
-      const sanitizedRoomName = sanitizeFilename(roomData.name);
-      const filePath = path.join(dataDir, `${sanitizedRoomName}.json`);
-      try {
-        await fs.access(filePath);
-      } catch (error) {
-        if (error.code === 'ENOENT') {
-          console.warn(`[State Check] Chat log for room '${roomData.name}' was missing. Re-creating file.`);
-          await fs.writeFile(filePath, '[]', 'utf-8');
+    const data = await fs.readFile(roomsFilePath, 'utf-8'); 
+    const loadedRooms = JSON.parse(data); // 파일이 손상되었다면 여기서 에러 발생
+    for (const roomId in loadedRooms) { 
+      if (loadedRooms.hasOwnProperty(roomId)) {
+        const roomData = loadedRooms[roomId];
+        rooms[roomId] = {
+          ...roomData,
+          users: new Map(), 
+          userProfiles: roomData.userProfiles || {},
+        };
+        const sanitizedRoomName = sanitizeFilename(roomData.name);
+        const filePath = path.join(dataDir, `${sanitizedRoomName}.json`);
+        try {
+          await fs.access(filePath);
+        } catch (error) {
+          if (error.code === 'ENOENT') {
+            console.warn(`[State Check] Chat log for room '${roomData.name}' was missing. Re-creating file.`);
+            await fs.writeFile(filePath, '[]', 'utf-8');
+          }
         }
       }
     }
@@ -94,7 +98,12 @@ const loadRooms = async () => {
   } catch (error) {
     if (error.code === 'ENOENT') {
       console.log('[State] rooms.json not found, creating a new one.');
+      await fs.writeFile(roomsFilePath, '{}', 'utf-8'); 
+    } else if (error instanceof SyntaxError) {
+      console.error('[State Error] Failed to parse rooms.json (corrupted). Backing up and creating a new one.');
+      await fs.copyFile(roomsFilePath, `${roomsFilePath}.${Date.now()}.bak`);
       await fs.writeFile(roomsFilePath, '{}', 'utf-8');
+      rooms = {};
     } else {
       console.error('[State Error] Failed to load rooms state:', error);
     }
@@ -174,6 +183,32 @@ app.get('/api/rooms-status', (req, res) => {
     isActive: room.users.size > 0,
   }));
   res.status(200).json(roomStatuses);
+});
+
+// 서버의 rooms 상태를 확인하기 위한 디버깅용 엔드포인트
+app.get('/api/admin/rooms-debug', async (req, res) => {
+  // 중요: 이 엔드포인트는 민감한 데이터를 노출할 수 있으므로 실제 프로덕션 환경에서는 접근 제어가 필요합니다.
+  try {
+    const fileData = await fs.readFile(roomsFilePath, 'utf-8');
+    const persistedState = JSON.parse(fileData);
+
+    // 메모리 상의 rooms 객체를 직렬화 가능한 형태로 변환
+    const inMemoryState = {};
+    for (const roomId in rooms) {
+      const { users, ...roomData } = rooms[roomId]; // users Map 제외
+      inMemoryState[roomId] = {
+        ...roomData,
+        userCount: users.size, // 현재 접속자 수 추가
+      };
+    }
+
+    res.status(200).json({
+      inMemoryState, // 현재 서버 메모리에 있는 상태
+      persistedState, // 디스크(rooms.json)에 저장된 상태
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to read rooms data.', error: error.message });
+  }
 });
 
 // React 앱으로 라우팅을 위임합니다.
